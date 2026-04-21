@@ -8,15 +8,43 @@
 // Sheet:  https://docs.google.com/spreadsheets/d/1og96N5wkXKgoJu-28UaNm4r-uMaVYi3vTEGmXdiH2bM
 // GID:    658794948  ← the "Form Responses" tab
 //
-// COLUMN MAPPING (0-based, adjust if form fields change):
-//   0 → Timestamp          (auto-added by Google Forms)
-//   1 → Patient name       (Last, First)
-//   4 → Travel destination (country / city entered in form)
-//   5 → Departure date     (date picker field)
+// COLUMN MAPPING (confirmed from live sheet data):
+//   0  → Timestamp
+//   1  → Name (Last, First)
+//   2  → Number of countries visiting
+//   3  → Purpose of travel
 //
-// To add more fields (email, return date, travel type, etc.),
-// increment the column index here and add the key to the object
-// returned by parseSheetRows().
+//   1-country section:
+//     4  → Country
+//     5  → Start date
+//     46 → End / return date
+//
+//   2-country section:
+//     6–8  → Country 1, start, end
+//     9–11 → Country 2, start, end
+//
+//   3-country section:
+//     12–14 → Country 1, start, end
+//     15–17 → Country 2, start, end
+//     18–20 → Country 3, start, end
+//
+//   4-country section:
+//     21–23 → Country 1, start, end
+//     24–26 → Country 2, start, end
+//     27–29 → Country 3, start, end
+//     30–32 → Country 4, start, end
+//
+//   5-country section:
+//     33–35 → Country 1, start, end
+//     36–38 → Country 2, start, end
+//     39–41 → Country 3, start, end
+//     42–44 → Country 4, start, end
+//
+//   City columns (shared across all sections):
+//     50 → City 1,  53 → City 2,  56 → City 3
+//     59 → City 4,  62 → City 5
+//
+//   45 → Concerns / questions
 // ═══════════════════════════════════════════════════════════════════
 
 const SHEET_ID  = "1og96N5wkXKgoJu-28UaNm4r-uMaVYi3vTEGmXdiH2bM";
@@ -24,30 +52,21 @@ const SHEET_GID = "658794948";
 const SHEET_URL =
   `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${SHEET_GID}`;
 
-// ═══════════════════════════════════════════════════════════════════
-// SAMPLE PATIENT DATA  (shown immediately; replaced by sheet data)
-// ═══════════════════════════════════════════════════════════════════
-
-const MOCK_PATIENTS = [
-  { id: "m001", name: "Morgan Hayes",    destination: "Lima, Peru",           departure: "2026-04-26", submitted: "2026-04-11" },
-  { id: "m002", name: "Jordan Lee",      destination: "Lisbon, Portugal",     departure: "2026-04-29", submitted: "2026-04-10" },
-  { id: "m003", name: "Avery Morgan",    destination: "Nairobi, Kenya",       departure: "2026-05-02", submitted: "2026-04-12" },
-  { id: "m004", name: "Riley Patel",     destination: "Bangkok, Thailand",    departure: "2026-05-15", submitted: "2026-04-08" },
-  { id: "m005", name: "Taylor Brooks",   destination: "Cape Town, S. Africa", departure: "2026-06-10", submitted: "2026-04-13" },
-];
 
 // ═══════════════════════════════════════════════════════════════════
-// CHECKLIST STEPS  (edit here to add / reorder steps)
+// CHECKLIST STEPS
 // ═══════════════════════════════════════════════════════════════════
 
 const CHECKLIST = [
-  "Review travel destinations and assess health risks",
-  "Determine and schedule required/recommended vaccines",
-  "Send patient a meeting invite for pre-travel consultation",
-  "Conduct consultation and document recommendations",
-  "Follow up with patient post-consultation",
-  "Assemble and prepare travel health kit",
-  "Mark patient as cleared for travel",
+  { text: "Doctor puts patient internally into Travel X and generate report" },
+  { text: "Determine and order recommended vaccines" },
+  { text: "Schedule patient appointment for pre-travel consultation and vaccine administration",
+    note: "Schedule once vaccines have arrived" },
+  { text: "Write and order prescriptions" },
+  { text: "Assemble travel kit" },
+  { text: "Conduct consultation" },
+  { text: "Schedule any follow-ups if necessary" },
+  { text: "Mark patient cleared for travel" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -55,10 +74,11 @@ const CHECKLIST = [
 // ═══════════════════════════════════════════════════════════════════
 
 let patients   = [];
-let expandedId = null; // which patient's checklist panel is open
+let expandedId = null;
 
-// ── Checklist persistence ────────────────────────────────────────
+// ── Persistence ──────────────────────────────────────────────────
 const STORAGE_KEY = "travelMedicineChecklistState_v2";
+const ARCHIVE_KEY = "travelMedicineArchiveState_v1";
 
 function loadState() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
@@ -69,14 +89,21 @@ function saveState(s) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
 }
 
+function loadArchive() {
+  try { return JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]"); }
+  catch { return []; }
+}
+
+function saveArchive(ids) {
+  localStorage.setItem(ARCHIVE_KEY, JSON.stringify(ids));
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // UTILITIES
 // ═══════════════════════════════════════════════════════════════════
 
-// Memoised "today at midnight" — recalculates on each page load
 const TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })();
 
-// Append T00:00:00 to force local-timezone parsing (avoids UTC-offset issues)
 function daysUntil(dateStr) {
   if (!dateStr) return null;
   return Math.round((new Date(dateStr + "T00:00:00") - TODAY) / 86_400_000);
@@ -90,14 +117,30 @@ function fmtDate(dateStr) {
   });
 }
 
-function departureChip(dateStr) {
-  const days = daysUntil(dateStr);
+function firstDeparture(p) {
+  return p.stops?.[0]?.arrival ?? "";
+}
+
+function departureChip(p) {
+  const dateStr = firstDeparture(p);
+  const days    = daysUntil(dateStr);
   if (days === null) return `<span class="chip chip-muted">No date</span>`;
   if (days < 0)      return `<span class="chip chip-muted">Departed</span>`;
   if (days === 0)    return `<span class="chip chip-danger">Departs today!</span>`;
   if (days <= 7)     return `<span class="chip chip-danger">Departs in ${days}d</span>`;
   if (days <= 21)    return `<span class="chip chip-warning">Departs in ${days}d</span>`;
-  return `<span class="chip">Departs ${fmtDate(dateStr)}</span>`;
+  return `<span class="chip chip-muted">Departs ${fmtDate(dateStr)}</span>`;
+}
+
+function countryCount(stops) {
+  return new Set((stops || []).map(s => s.country).filter(Boolean)).size;
+}
+
+function destinationLabel(stops) {
+  if (!stops || !stops.length) return "Unknown destination";
+  const first = [stops[0].country, stops[0].city].filter(Boolean).join(", ");
+  if (stops.length === 1) return first;
+  return `${first} + ${stops.length - 1} more`;
 }
 
 function getProgress(patientId, state) {
@@ -110,20 +153,40 @@ function getProgress(patientId, state) {
   return               { label: "In progress",  cls: "status-in-progress",  done, total, pct };
 }
 
+const ARCHIVE_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`;
+
 // ═══════════════════════════════════════════════════════════════════
-// RENDER — Stats bar
+// SYNC STATUS
+// ═══════════════════════════════════════════════════════════════════
+
+function setSyncStatus(state, text) {
+  const el = document.getElementById("sync-status");
+  if (!el) return;
+  el.dataset.state = state;
+  el.textContent   = text;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RENDER — Stats bar (3 cards: Not Started / In Progress / Cleared·Archived)
 // ═══════════════════════════════════════════════════════════════════
 
 function renderStats() {
-  const state = loadState();
+  const state    = loadState();
+  const archived = loadArchive();
   let notStarted = 0, inProgress = 0, complete = 0;
 
-  patients.forEach(p => {
-    const { cls } = getProgress(p.id, state);
-    if      (cls === "status-not-started") notStarted++;
-    else if (cls === "status-complete")    complete++;
-    else                                   inProgress++;
-  });
+  patients
+    .filter(p => !archived.includes(p.id))
+    .forEach(p => {
+      const { cls } = getProgress(p.id, state);
+      if      (cls === "status-not-started") notStarted++;
+      else if (cls === "status-complete")    complete++;
+      else                                   inProgress++;
+    });
+
+  const archivedCount   = archived.filter(id => patients.some(p => p.id === id)).length;
+  const clearedArchived = complete + archivedCount;
+  const drawerOpen      = document.getElementById("archive-drawer").dataset.open === "true";
 
   document.getElementById("stats-bar").innerHTML = `
     <div class="stat-card stat-not-started">
@@ -134,11 +197,66 @@ function renderStats() {
       <div class="stat-count">${inProgress}</div>
       <div class="stat-label">In progress</div>
     </div>
-    <div class="stat-card stat-complete">
-      <div class="stat-count">${complete}</div>
-      <div class="stat-label">Cleared</div>
-    </div>
+    <button class="stat-archived${drawerOpen ? " stat-archive-active" : ""}" id="archived-stat-btn" type="button">
+      <div class="stat-count">${clearedArchived}</div>
+      <div class="stat-label">Cleared / Archived ${drawerOpen ? "▲" : "▼"}</div>
+    </button>
   `;
+
+  document.getElementById("archived-stat-btn").addEventListener("click", toggleArchiveDrawer);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ARCHIVE DRAWER
+// ═══════════════════════════════════════════════════════════════════
+
+function toggleArchiveDrawer() {
+  const drawer = document.getElementById("archive-drawer");
+  const isOpen = drawer.dataset.open === "true";
+  drawer.dataset.open = String(!isOpen);
+  if (!isOpen) {
+    renderArchiveDrawer();
+  } else {
+    drawer.innerHTML = "";
+  }
+  renderStats();
+}
+
+function renderArchiveDrawer() {
+  const drawer           = document.getElementById("archive-drawer");
+  const archived         = loadArchive();
+  const state            = loadState();
+  const archivedPatients = patients.filter(p => archived.includes(p.id));
+
+  if (!archivedPatients.length) {
+    drawer.innerHTML = '<div class="archive-empty">No archived patients yet.</div>';
+    return;
+  }
+
+  drawer.innerHTML = `
+    <div class="archive-header">Archived patients</div>
+    ${archivedPatients.map(p => {
+      const prog = getProgress(p.id, state);
+      return `
+        <div class="archive-row">
+          <div class="archive-info">
+            <span class="archive-name">${p.name}</span>
+            <span class="archive-meta">${destinationLabel(p.stops)} · Departs ${fmtDate(firstDeparture(p))}</span>
+            <span class="archive-status ${prog.cls}">${prog.label}</span>
+          </div>
+          <button class="unarchive-btn" data-patient-id="${p.id}" type="button">Restore</button>
+        </div>`;
+    }).join("")}
+  `;
+
+  drawer.querySelectorAll(".unarchive-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      saveArchive(loadArchive().filter(id => id !== btn.dataset.patientId));
+      renderPatients();
+      renderArchiveDrawer();
+      renderStats();
+    });
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -146,13 +264,55 @@ function renderStats() {
 // ═══════════════════════════════════════════════════════════════════
 
 function getFilteredSorted() {
-  const q = (document.getElementById("search")?.value || "").toLowerCase().trim();
-  const visible = q
-    ? patients.filter(p =>
+  const q        = (document.getElementById("search")?.value || "").toLowerCase().trim();
+  const archived = loadArchive();
+  const active   = patients.filter(p => !archived.includes(p.id));
+  const visible  = q
+    ? active.filter(p =>
         p.name.toLowerCase().includes(q) ||
-        p.destination.toLowerCase().includes(q))
-    : patients;
-  return [...visible].sort((a, b) => new Date(a.departure) - new Date(b.departure));
+        (p.stops || []).some(s =>
+          s.country.toLowerCase().includes(q) || s.city.toLowerCase().includes(q)))
+    : active;
+  return [...visible].sort((a, b) => new Date(firstDeparture(a)) - new Date(firstDeparture(b)));
+}
+
+function renderItinerary(p) {
+  if (!p.stops || !p.stops.length) return "";
+  const n = countryCount(p.stops);
+
+  return `
+    <div class="patient-info-section">
+      <div class="info-section-title">Itinerary — ${n} ${n === 1 ? "country" : "countries"}</div>
+      <table class="itinerary-table">
+        <thead>
+          <tr>
+            <th>Country</th>
+            <th>City / Region</th>
+            <th>Arrival</th>
+            <th>Departure</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${p.stops.map(s => `
+            <tr>
+              <td>${s.country || "—"}</td>
+              <td>${s.city    || "—"}</td>
+              <td>${fmtDate(s.arrival)}</td>
+              <td>${fmtDate(s.departure)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+      ${p.returnDate ? `
+        <div class="info-row">
+          <span class="info-label">Return date</span>
+          <span>${fmtDate(p.returnDate)}</span>
+        </div>` : ""}
+      ${p.purpose ? `
+        <div class="info-row">
+          <span class="info-label">Purpose</span>
+          <span>${p.purpose}</span>
+        </div>` : ""}
+    </div>`;
 }
 
 function renderPatients() {
@@ -167,51 +327,69 @@ function renderPatients() {
   }
 
   container.innerHTML = sorted.map(p => {
-    const prog = getProgress(p.id, state);
-    const ps   = state[p.id] || {};
+    const prog       = getProgress(p.id, state);
+    const ps         = state[p.id] || {};
+    const isComplete = prog.done === prog.total;
+    const n          = countryCount(p.stops);
 
     return `
 <article class="patient-card" data-patient-id="${p.id}">
 
-  <button class="patient-summary" type="button" aria-expanded="false">
-    <div>
-      <h3 class="patient-name">${p.name}</h3>
-      <div class="patient-meta">
-        <span>${p.destination}</span>
-        ${departureChip(p.departure)}
-        <span class="chip chip-muted">Submitted ${fmtDate(p.submitted)}</span>
+  <div class="card-header-row">
+    <button class="patient-summary" type="button" aria-expanded="false">
+      <div>
+        <h3 class="patient-name">${p.name}</h3>
+        <div class="patient-meta">
+          <span class="chip chip-countries">${n} ${n === 1 ? "country" : "countries"}</span>
+          <span class="dest-label">${destinationLabel(p.stops)}</span>
+          ${departureChip(p)}
+          ${p.returnDate ? `<span class="chip chip-muted">Returns ${fmtDate(p.returnDate)}</span>` : ""}
+        </div>
       </div>
-    </div>
-    <div>
-      <div class="progress-pill ${prog.cls}">${prog.label}&nbsp;·&nbsp;${prog.done}/${prog.total}</div>
-    </div>
-  </button>
+      <div>
+        <div class="progress-pill ${prog.cls}">${prog.label}&nbsp;·&nbsp;${prog.done}/${prog.total}</div>
+      </div>
+    </button>
+    <button class="archive-icon-btn" type="button" data-patient-id="${p.id}" title="Archive patient" aria-label="Archive ${p.name}">
+      ${ARCHIVE_SVG}
+    </button>
+  </div>
 
   <div class="progress-track">
     <div class="progress-fill ${prog.cls}" style="width:${prog.pct}%"></div>
   </div>
 
   <div class="patient-details" id="details-${p.id}">
+
+    <div class="archive-prompt${isComplete ? " visible" : ""}" id="prompt-${p.id}">
+      <span class="archive-prompt-text">All steps complete — ready to archive this patient?</span>
+      <div class="archive-prompt-actions">
+        <button class="archive-prompt-confirm" type="button" data-patient-id="${p.id}">Archive</button>
+        <button class="archive-prompt-dismiss" type="button" data-patient-id="${p.id}">Dismiss</button>
+      </div>
+    </div>
+
+    ${renderItinerary(p)}
+
     <div class="checklist">
       ${CHECKLIST.map((task, i) => {
         const checked = !!ps[i];
         return `
         <label class="checklist-item${checked ? " completed" : ""}">
-          <input
-            type="checkbox"
-            data-patient-id="${p.id}"
-            data-task-index="${i}"
-            ${checked ? "checked" : ""}
-          />
-          <span class="checklist-item-text">${task}</span>
+          <input type="checkbox" data-patient-id="${p.id}" data-task-index="${i}" ${checked ? "checked" : ""} />
+          <span class="checklist-item-text">
+            ${task.text}
+            ${task.note ? `<span class="checklist-note">⚠ ${task.note}</span>` : ""}
+          </span>
         </label>`;
       }).join("")}
     </div>
+
     <div class="checklist-footer">
-      <button class="reset-btn" type="button" data-patient-id="${p.id}">
-        Reset checklist
-      </button>
+      <button class="reset-btn" type="button" data-patient-id="${p.id}">Reset checklist</button>
+      <button class="archive-btn" type="button" data-patient-id="${p.id}">Archive</button>
     </div>
+
   </div>
 
 </article>`;
@@ -222,7 +400,6 @@ function renderPatients() {
   renderStats();
 }
 
-// Re-open whichever patient panel was open before a re-render
 function restoreExpanded() {
   if (!expandedId) return;
   const card = document.querySelector(`[data-patient-id="${expandedId}"]`);
@@ -232,12 +409,12 @@ function restoreExpanded() {
   if (btn && details) {
     btn.setAttribute("aria-expanded", "true");
     details.classList.add("active");
+    card.classList.add("is-open");
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// TARGETED DOM UPDATE — avoids re-rendering the full list when a
-// checkbox changes state (which would collapse the open panel).
+// TARGETED DOM UPDATE
 // ═══════════════════════════════════════════════════════════════════
 
 function updatePatientProgress(patientId, state) {
@@ -256,6 +433,26 @@ function updatePatientProgress(patientId, state) {
     fill.style.width = `${prog.pct}%`;
     fill.className   = `progress-fill ${prog.cls}`;
   }
+
+  const prompt = document.getElementById(`prompt-${patientId}`);
+  if (prompt) {
+    prompt.classList.toggle("visible", prog.done === prog.total);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ARCHIVE ACTION
+// ═══════════════════════════════════════════════════════════════════
+
+function doArchive(patientId) {
+  const archived = loadArchive();
+  if (!archived.includes(patientId)) archived.push(patientId);
+  saveArchive(archived);
+  if (expandedId === patientId) expandedId = null;
+  renderPatients();
+  const drawer = document.getElementById("archive-drawer");
+  if (drawer.dataset.open === "true") renderArchiveDrawer();
+  renderStats();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -264,42 +461,36 @@ function updatePatientProgress(patientId, state) {
 
 function attachEvents() {
 
-  // ── Expand / collapse ──────────────────────────────────────────
   document.querySelectorAll(".patient-summary").forEach(btn => {
     btn.addEventListener("click", () => {
-      const patientId = btn.closest(".patient-card").dataset.patientId;
+      const card      = btn.closest(".patient-card");
+      const patientId = card.dataset.patientId;
       const details   = document.getElementById(`details-${patientId}`);
       const isOpen    = btn.getAttribute("aria-expanded") === "true";
 
       btn.setAttribute("aria-expanded", String(!isOpen));
       details.classList.toggle("active", !isOpen);
+      card.classList.toggle("is-open", !isOpen);
       expandedId = !isOpen ? patientId : null;
     });
   });
 
-  // ── Checkboxes — targeted update, panel stays open ────────────
   document.querySelectorAll(".checklist-item input[type='checkbox']").forEach(cb => {
     cb.addEventListener("change", () => {
-      const patientId  = cb.dataset.patientId;
-      const taskIndex  = Number(cb.dataset.taskIndex);
-      const state      = loadState();
+      const patientId = cb.dataset.patientId;
+      const taskIndex = Number(cb.dataset.taskIndex);
+      const state     = loadState();
 
       if (!state[patientId]) state[patientId] = {};
       state[patientId][taskIndex] = cb.checked;
       saveState(state);
 
-      // Strikethrough on the label
       cb.closest(".checklist-item").classList.toggle("completed", cb.checked);
-
-      // Update badge + progress bar without touching the open panel
       updatePatientProgress(patientId, state);
-
-      // Refresh summary counts
       renderStats();
     });
   });
 
-  // ── Reset buttons ──────────────────────────────────────────────
   document.querySelectorAll(".reset-btn").forEach(btn => {
     btn.addEventListener("click", e => {
       e.stopPropagation();
@@ -308,7 +499,6 @@ function attachEvents() {
       state[patientId] = {};
       saveState(state);
 
-      // Uncheck every box in this patient's panel
       const details = document.getElementById(`details-${patientId}`);
       if (details) {
         details.querySelectorAll(".checklist-item").forEach(item => {
@@ -321,9 +511,36 @@ function attachEvents() {
       renderStats();
     });
   });
+
+  document.querySelectorAll(".archive-icon-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      doArchive(btn.dataset.patientId);
+    });
+  });
+
+  document.querySelectorAll(".archive-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      doArchive(btn.dataset.patientId);
+    });
+  });
+
+  document.querySelectorAll(".archive-prompt-confirm").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      doArchive(btn.dataset.patientId);
+    });
+  });
+
+  document.querySelectorAll(".archive-prompt-dismiss").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      btn.closest(".archive-prompt").classList.remove("visible");
+    });
+  });
 }
 
-// Called by the search input's oninput
 function onSearch() {
   renderPatients();
 }
@@ -332,55 +549,139 @@ function onSearch() {
 // SHEET DATA PARSING
 // ═══════════════════════════════════════════════════════════════════
 
-function normalizeSheetText(text) {
-  // Strip the gviz JSONP wrapper:  google.visualization.Query.setResponse({...});
-  const jsonText = text
-    .replace(/^[^\(]*\(/, "")
-    .replace(/\)\s*;?\s*$/, "");
-
-  // Convert Sheets date literals  Date(YYYY,M,D)  →  ISO strings
-  return jsonText.replace(
-    /Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?\)/g,
-    (_, y, m, d, h = 0, mi = 0, s = 0) =>
-      `"${y}-${String(+m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}` +
-      `T${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(s).padStart(2, "0")}Z"`
-  );
-}
-
+// Handles JS Date objects, M/D/YYYY strings, ISO strings, numbers
 function parseDateValue(v) {
   if (!v && v !== 0) return "";
-  const d = new Date(typeof v === "number" ? v : String(v));
+  if (v instanceof Date) return isNaN(v) ? "" : v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mdy) return `${mdy[3]}-${mdy[1].padStart(2, "0")}-${mdy[2].padStart(2, "0")}`;
+  const d = new Date(typeof v === "number" ? v : s);
   return isNaN(d) ? "" : d.toISOString().slice(0, 10);
 }
 
+// "Last, First"  →  "First Last"
+function formatName(raw) {
+  if (!raw) return "Unknown patient";
+  const parts = String(raw).split(",").map(p => p.trim());
+  return parts.length === 2 ? `${parts[1]} ${parts[0]}` : String(raw).trim();
+}
+
 function parseSheetRows(table) {
+  // ── Debug: print column map and first two rows to console ──────
+  console.group("📋 GVIZ column map");
+  (table.cols || []).forEach((col, i) => {
+    if (col.label) console.log(`[${i}] (${col.type}) "${col.label}"`);
+  });
+  console.groupEnd();
+
+  (table.rows || []).slice(0, 2).forEach((row, ri) => {
+    console.group(`📋 Row ${ri} non-null cells`);
+    (row.c || []).forEach((cell, ci) => {
+      if (cell?.v != null) console.log(`[${ci}] v=${JSON.stringify(cell.v)}  f=${JSON.stringify(cell.f)}`);
+    });
+    console.groupEnd();
+  });
+  // ──────────────────────────────────────────────────────────────
+
   return (table.rows || []).map((row, i) => {
     const cells = row.c || [];
     const get   = idx => cells[idx]?.v ?? null;
+    // gviz Date objects don't stringify reliably — use formatted f field first
+    const pd    = idx => parseDateValue(cells[idx]?.f ?? null) || parseDateValue(get(idx));
+    const str   = idx => String(get(idx) ?? "").trim();
 
-    // Adjust these indices if the form column order ever changes
-    const submitted   = parseDateValue(get(0));
-    const name        = String(get(1) ?? "Unknown patient").trim();
-    const destination = String(get(4) ?? "Unknown destination").trim();
-    const departure   = parseDateValue(get(5));
+    const submitted    = pd(0);
+    const name         = formatName(get(1));
+    const numCountries = Number(get(2) || 1);
+    const purpose      = str(3);
+
+    // City columns — verified from live data; update if form structure changes
+    // 1-country: col 55 | 3-country: cols 50, 56, 60
+    const CITY_COLS = {
+      1: [55],
+      2: [49, 53],          // unverified — update when a 2-country response arrives
+      3: [50, 56, 60],      // verified
+      4: [51, 57, 61, 64],  // unverified
+      5: [52, 58, 62, 65, 66], // unverified
+    };
+    const cityCols = CITY_COLS[numCountries] || [];
+    const city = n => n < cityCols.length ? str(cityCols[n]) : "";
+
+    let stops = [], returnDate = "";
+
+    if (numCountries === 1) {
+      stops      = [{ country: str(4), city: city(0), arrival: pd(5), departure: pd(48) }];
+      returnDate = pd(48);
+    } else if (numCountries === 2) {
+      stops      = [
+        { country: str(6),  city: city(0), arrival: pd(7),  departure: pd(8)  },
+        { country: str(9),  city: city(1), arrival: pd(10), departure: pd(11) },
+      ];
+      returnDate = pd(11);
+    } else if (numCountries === 3) {
+      stops      = [
+        { country: str(12), city: city(0), arrival: pd(13), departure: pd(14) },
+        { country: str(15), city: city(1), arrival: pd(16), departure: pd(17) },
+        { country: str(18), city: city(2), arrival: pd(19), departure: pd(20) },
+      ];
+      returnDate = pd(20);
+    } else if (numCountries === 4) {
+      stops      = [
+        { country: str(21), city: city(0), arrival: pd(22), departure: pd(23) },
+        { country: str(24), city: city(1), arrival: pd(25), departure: pd(26) },
+        { country: str(27), city: city(2), arrival: pd(28), departure: pd(29) },
+        { country: str(30), city: city(3), arrival: pd(31), departure: pd(32) },
+      ];
+      returnDate = pd(32);
+    } else {
+      stops      = [
+        { country: str(33), city: city(0), arrival: pd(34), departure: pd(35) },
+        { country: str(36), city: city(1), arrival: pd(37), departure: pd(38) },
+        { country: str(39), city: city(2), arrival: pd(40), departure: pd(41) },
+        { country: str(42), city: city(3), arrival: pd(43), departure: pd(44) },
+      ];
+      returnDate = pd(44);
+    }
+
+    stops = stops.filter(s => s.country || s.city);
+    if (!stops.length) stops = [{ country: "Unknown", city: "", arrival: "", departure: "" }];
 
     return {
-      id:          `sheet-${name.replace(/\s+/g, "-").toLowerCase()}-${i}`,
-      name,
-      destination,
-      departure,
-      submitted,
+      id: `sheet-${name.replace(/\s+/g, "-").toLowerCase()}-${i}`,
+      name, purpose, returnDate, submitted, stops,
     };
   });
 }
 
-async function fetchSheetPatients() {
-  const res  = await fetch(SHEET_URL, { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const text = await res.text();
-  const data = JSON.parse(normalizeSheetText(text));
-  if (!data?.table) throw new Error("Unexpected response shape");
-  return parseSheetRows(data.table);
+// Uses JSONP to bypass CORS when running from file:// URLs
+function fetchSheetPatients() {
+  return new Promise((resolve, reject) => {
+    const cb     = `_gviz_${Date.now()}`;
+    const script = document.createElement("script");
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("Request timed out"));
+    }, 10000);
+
+    function cleanup() {
+      clearTimeout(timer);
+      delete window[cb];
+      script.remove();
+    }
+
+    window[cb] = function(data) {
+      cleanup();
+      if (!data?.table) { reject(new Error("Unexpected response")); return; }
+      resolve(parseSheetRows(data.table));
+    };
+
+    script.onerror = () => { cleanup(); reject(new Error("Script load failed")); };
+    script.src = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq` +
+                 `?tqx=out:json;responseHandler:${cb}&gid=${SHEET_GID}`;
+    document.head.appendChild(script);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -388,22 +689,29 @@ async function fetchSheetPatients() {
 // ═══════════════════════════════════════════════════════════════════
 
 async function init() {
-  // Show mock data immediately so the page feels instant
-  patients = MOCK_PATIENTS;
-  renderPatients();
+  // Show loading state while fetching
+  document.getElementById("patient-list").innerHTML =
+    '<div class="no-patients">Loading patients from form responses…</div>';
+  document.getElementById("stats-bar").innerHTML = "";
 
-  // Then try to load real submissions from the sheet
   try {
     const sheetPatients = await fetchSheetPatients();
-    if (sheetPatients.length) {
-      patients = sheetPatients;
-      renderPatients();
-      console.info(`Loaded ${sheetPatients.length} patient(s) from Google Sheets.`);
+    patients = sheetPatients;
+    renderPatients();
+
+    if (patients.length) {
+      setSyncStatus("ok", `${patients.length} response${patients.length === 1 ? "" : "s"} loaded`);
     } else {
-      console.info("Sheet returned no rows — keeping sample data.");
+      setSyncStatus("ok", "No responses yet");
+      document.getElementById("patient-list").innerHTML =
+        '<div class="no-patients">No form responses yet. Responses will appear here automatically once patients submit the form.</div>';
     }
+    console.info(`Loaded ${patients.length} patient(s) from Google Sheets.`);
   } catch (err) {
-    console.warn("Google Sheet unavailable, using sample data:", err.message);
+    setSyncStatus("error", "Could not load – check sheet access");
+    document.getElementById("patient-list").innerHTML =
+      '<div class="no-patients">Could not load form responses. Make sure the sheet is shared as "Anyone with the link can view."</div>';
+    console.warn("Google Sheet unavailable:", err.message);
   }
 }
 
