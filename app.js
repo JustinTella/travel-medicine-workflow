@@ -40,11 +40,14 @@
 //     39–41 → Country 3, start, end
 //     42–44 → Country 4, start, end
 //
-//   City columns (shared across all sections):
-//     50 → City 1,  53 → City 2,  56 → City 3
-//     59 → City 4,  62 → City 5
+//   City columns (shared across ALL sections — confirmed from live gviz data):
+//     58 → City for 1st stop
+//     59 → City for 2nd stop
+//     60 → City for 3rd stop
+//     61 → City for 4th stop
 //
-//   45 → Concerns / questions
+//   47 → Concerns / questions
+//   48 → End date of travel (1-country)
 // ═══════════════════════════════════════════════════════════════════
 
 const SHEET_ID  = "1og96N5wkXKgoJu-28UaNm4r-uMaVYi3vTEGmXdiH2bM";
@@ -568,81 +571,70 @@ function formatName(raw) {
 }
 
 function parseSheetRows(table) {
-  // ── Debug: print column map and first two rows to console ──────
-  console.group("📋 GVIZ column map");
-  (table.cols || []).forEach((col, i) => {
-    if (col.label) console.log(`[${i}] (${col.type}) "${col.label}"`);
-  });
-  console.groupEnd();
-
-  (table.rows || []).slice(0, 2).forEach((row, ri) => {
-    console.group(`📋 Row ${ri} non-null cells`);
-    (row.c || []).forEach((cell, ci) => {
-      if (cell?.v != null) console.log(`[${ci}] v=${JSON.stringify(cell.v)}  f=${JSON.stringify(cell.f)}`);
-    });
-    console.groupEnd();
-  });
-  // ──────────────────────────────────────────────────────────────
-
   return (table.rows || []).map((row, i) => {
     const cells = row.c || [];
     const get   = idx => cells[idx]?.v ?? null;
-    // gviz Date objects don't stringify reliably — use formatted f field first
     const pd    = idx => parseDateValue(cells[idx]?.f ?? null) || parseDateValue(get(idx));
     const str   = idx => String(get(idx) ?? "").trim();
+    const pick  = (...indices) => indices.map(str).find(Boolean) || "";
 
     const submitted    = pd(0);
     const name         = formatName(get(1));
     const numCountries = Number(get(2) || 1);
     const purpose      = str(3);
 
-    // City columns — verified from live data; update if form structure changes
-    // 1-country: col 55 | 3-country: cols 50, 56, 60
-    const CITY_COLS = {
-      1: [55],
-      2: [49, 53],          // unverified — update when a 2-country response arrives
-      3: [50, 56, 60],      // verified
-      4: [51, 57, 61, 64],  // unverified
-      5: [52, 58, 62, 65, 66], // unverified
+    // City columns 58–61 are shared across all sections (confirmed from live gviz data).
+    // Stop n (0-based) → column 58+n.
+    const layouts = {
+      1: {
+        stops: [
+          { country: 4, arrival: 5, departure: 48, city: [55, 49] },
+        ],
+        returnDate: 48,
+      },
+      2: {
+        stops: [
+          { country: 6, arrival: 7, departure: 8, city: [54, 50] },
+          { country: 9, arrival: 10, departure: 11, city: [51, 56, 59] },
+        ],
+        returnDate: 11,
+      },
+      3: {
+        stops: [
+          { country: 12, arrival: 13, departure: 14, city: [50, 54, 58] },
+          { country: 15, arrival: 16, departure: 17, city: [56, 51, 59] },
+          { country: 18, arrival: 19, departure: 20, city: [60, 57] },
+        ],
+        returnDate: 20,
+      },
+      4: {
+        stops: [
+          { country: 21, arrival: 22, departure: 23, city: [58, 54, 50] },
+          { country: 24, arrival: 25, departure: 26, city: [59, 56, 51] },
+          { country: 27, arrival: 28, departure: 29, city: [57, 60] },
+          { country: 30, arrival: 31, departure: 32, city: [61] },
+        ],
+        returnDate: 32,
+      },
+      5: {
+        stops: [
+          { country: 33, arrival: 34, departure: 35, city: [62, 63, 58] },
+          { country: 36, arrival: 37, departure: 38, city: [64, 68, 59] },
+          { country: 39, arrival: 40, departure: 41, city: [65, 69, 60] },
+          { country: 42, arrival: 43, departure: 44, city: [66, 70, 61] },
+        ],
+        returnDate: 44,
+      },
     };
-    const cityCols = CITY_COLS[numCountries] || [];
-    const city = n => n < cityCols.length ? str(cityCols[n]) : "";
 
-    let stops = [], returnDate = "";
-
-    if (numCountries === 1) {
-      stops      = [{ country: str(4), city: city(0), arrival: pd(5), departure: pd(48) }];
-      returnDate = pd(48);
-    } else if (numCountries === 2) {
-      stops      = [
-        { country: str(6),  city: city(0), arrival: pd(7),  departure: pd(8)  },
-        { country: str(9),  city: city(1), arrival: pd(10), departure: pd(11) },
-      ];
-      returnDate = pd(11);
-    } else if (numCountries === 3) {
-      stops      = [
-        { country: str(12), city: city(0), arrival: pd(13), departure: pd(14) },
-        { country: str(15), city: city(1), arrival: pd(16), departure: pd(17) },
-        { country: str(18), city: city(2), arrival: pd(19), departure: pd(20) },
-      ];
-      returnDate = pd(20);
-    } else if (numCountries === 4) {
-      stops      = [
-        { country: str(21), city: city(0), arrival: pd(22), departure: pd(23) },
-        { country: str(24), city: city(1), arrival: pd(25), departure: pd(26) },
-        { country: str(27), city: city(2), arrival: pd(28), departure: pd(29) },
-        { country: str(30), city: city(3), arrival: pd(31), departure: pd(32) },
-      ];
-      returnDate = pd(32);
-    } else {
-      stops      = [
-        { country: str(33), city: city(0), arrival: pd(34), departure: pd(35) },
-        { country: str(36), city: city(1), arrival: pd(37), departure: pd(38) },
-        { country: str(39), city: city(2), arrival: pd(40), departure: pd(41) },
-        { country: str(42), city: city(3), arrival: pd(43), departure: pd(44) },
-      ];
-      returnDate = pd(44);
-    }
+    const layout = layouts[numCountries] || layouts[5];
+    let stops = layout.stops.map(stop => ({
+      country: str(stop.country),
+      city: pick(...stop.city),
+      arrival: pd(stop.arrival),
+      departure: pd(stop.departure),
+    }));
+    let returnDate = pd(layout.returnDate);
 
     stops = stops.filter(s => s.country || s.city);
     if (!stops.length) stops = [{ country: "Unknown", city: "", arrival: "", departure: "" }];
