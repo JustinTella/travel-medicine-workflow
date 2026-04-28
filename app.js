@@ -8,46 +8,48 @@
 // Sheet:  https://docs.google.com/spreadsheets/d/1og96N5wkXKgoJu-28UaNm4r-uMaVYi3vTEGmXdiH2bM
 // GID:    658794948  ← the "Form Responses" tab
 //
-// COLUMN MAPPING (confirmed from live sheet data):
+// COLUMN MAPPING (verified against the live Google Sheet on 2026-04-27):
 //   0  → Timestamp
 //   1  → Name (Last, First)
 //   2  → Number of countries visiting
 //   3  → Purpose of travel
 //
-//   1-country section:
+//   Each country-count path writes to its own dedicated block in the sheet:
+//   1 country:
 //     4  → Country
 //     5  → Start date
-//     46 → End / return date
+//     48 → End / return date
+//     55 → City
 //
-//   2-country section:
-//     6–8  → Country 1, start, end
-//     9–11 → Country 2, start, end
+//   2 countries:
+//     6–8   → Stop 1 (country, arrival, departure)
+//     9–11  → Stop 2
+//     54    → Stop 1 city
+//     51    → Stop 2 city
 //
-//   3-country section:
-//     12–14 → Country 1, start, end
-//     15–17 → Country 2, start, end
-//     18–20 → Country 3, start, end
+//   3 countries:
+//     12–14 → Stop 1
+//     15–17 → Stop 2
+//     18–20 → Stop 3
+//     50, 56, 60 → stop 1–3 cities
 //
-//   4-country section:
-//     21–23 → Country 1, start, end
-//     24–26 → Country 2, start, end
-//     27–29 → Country 3, start, end
-//     30–32 → Country 4, start, end
+//   4 countries:
+//     21–23 → Stop 1
+//     24–26 → Stop 2
+//     27–29 → Stop 3
+//     30–32 → Stop 4
+//     58, 59, 57, 61 → stop 1–4 cities
 //
-//   5-country section:
-//     33–35 → Country 1, start, end
-//     36–38 → Country 2, start, end
-//     39–41 → Country 3, start, end
-//     42–44 → Country 4, start, end
-//
-//   City columns (shared across ALL sections — confirmed from live gviz data):
-//     58 → City for 1st stop
-//     59 → City for 2nd stop
-//     60 → City for 3rd stop
-//     61 → City for 4th stop
+//   5+ countries:
+//     33–35 → Stop 1
+//     36–38 → Stop 2
+//     39–41 → Stop 3
+//     42–44 → Stop 4
+//     45    → Additional countries (free text)
+//     46    → Additional date ranges (free text)
+//     62, 64, 65, 66, 67 → stop 1–4 plus additional cities
 //
 //   47 → Concerns / questions
-//   48 → End date of travel (1-country)
 // ═══════════════════════════════════════════════════════════════════
 
 const SHEET_ID  = "1og96N5wkXKgoJu-28UaNm4r-uMaVYi3vTEGmXdiH2bM";
@@ -62,16 +64,14 @@ const SHEET_URL =
 
 const CHECKLIST = [
   {
-    text: "Enter patient in Travax and generate report",
-    link: { href: "https://www.travax.com/", label: "Open Travax ↗" },
+    html: `Enter patient in <a class="checklist-link" href="https://www.travax.com/" target="_blank" rel="noopener noreferrer">Travax</a> and generate report`,
   },
   { text: "Determine and order recommended vaccines" },
   { text: "Schedule patient appointment for pre-travel consultation and vaccine administration",
     note: "Schedule once vaccines have arrived" },
   { text: "Write and order prescriptions" },
   {
-    text: "Assemble travel kit",
-    link: { href: "file:///C:/Users/jtell/Downloads/travel_kit.html", label: "Open travel kit menu ↗" },
+    html: `Assemble <a class="checklist-link" href="file:///C:/Users/jtell/Downloads/travel_kit.html" target="_blank" rel="noopener noreferrer">travel kit</a>`,
   },
   { text: "Conduct patient appointment, administer vaccines, assign prescriptions, and provide the travel kit" },
   { text: "Schedule any follow-ups if necessary" },
@@ -287,7 +287,7 @@ function getFilteredSorted() {
 
 function renderItinerary(p) {
   if (!p.stops || !p.stops.length) return "";
-  const n = countryCount(p.stops);
+  const n = p.numCountries || countryCount(p.stops);
 
   return `
     <div class="patient-info-section">
@@ -337,7 +337,7 @@ function renderPatients() {
     const prog       = getProgress(p.id, state);
     const ps         = state[p.id] || {};
     const isComplete = prog.done === prog.total;
-    const n          = countryCount(p.stops);
+    const n          = p.numCountries || countryCount(p.stops);
 
     return `
 <article class="patient-card" data-patient-id="${p.id}">
@@ -384,8 +384,7 @@ function renderPatients() {
         <label class="checklist-item${checked ? " completed" : ""}">
           <input type="checkbox" data-patient-id="${p.id}" data-task-index="${i}" ${checked ? "checked" : ""} />
           <span class="checklist-item-text">
-            ${task.text}
-            ${task.link ? `<a class="checklist-link" href="${task.link.href}" target="_blank" rel="noopener noreferrer">${task.link.label}</a>` : ""}
+            ${task.html ?? task.text}
             ${task.note ? `<span class="checklist-note">⚠ ${task.note}</span>` : ""}
           </span>
         </label>`;
@@ -578,7 +577,70 @@ function formatName(raw) {
   return parts.length === 2 ? `${parts[1]} ${parts[0]}` : String(raw).trim();
 }
 
+function normalizeCountryCount(rawValue) {
+  const raw = String(rawValue ?? "").trim().toLowerCase();
+  const numeric = Number(rawValue);
+  if (numeric >= 1 && numeric <= 9) return numeric;
+  if (raw.includes("more than 4") || raw.includes("5")) return 5;
+  return 0;
+}
+
 function parseSheetRows(table) {
+  const layouts = [
+    {
+      count: 5,
+      stops: [
+        { country: 33, arrival: 34, departure: 35, city: [62] },
+        { country: 36, arrival: 37, departure: 38, city: [64] },
+        { country: 39, arrival: 40, departure: 41, city: [65] },
+        { country: 42, arrival: 43, departure: 44, city: [66] },
+      ],
+      overflowCountry: 45,
+      overflowDates: 46,
+      overflowCity: 67,
+      returnDate: 44,
+      matches: str => [33, 36, 39, 42, 45].some(idx => str(idx)),
+    },
+    {
+      count: 4,
+      stops: [
+        { country: 21, arrival: 22, departure: 23, city: [58] },
+        { country: 24, arrival: 25, departure: 26, city: [59] },
+        { country: 27, arrival: 28, departure: 29, city: [57] },
+        { country: 30, arrival: 31, departure: 32, city: [61] },
+      ],
+      returnDate: 32,
+      matches: str => [21, 24, 27, 30].some(idx => str(idx)),
+    },
+    {
+      count: 3,
+      stops: [
+        { country: 12, arrival: 13, departure: 14, city: [50] },
+        { country: 15, arrival: 16, departure: 17, city: [56] },
+        { country: 18, arrival: 19, departure: 20, city: [60] },
+      ],
+      returnDate: 20,
+      matches: str => [12, 15, 18].some(idx => str(idx)),
+    },
+    {
+      count: 2,
+      stops: [
+        { country: 6, arrival: 7, departure: 8, city: [54] },
+        { country: 9, arrival: 10, departure: 11, city: [51] },
+      ],
+      returnDate: 11,
+      matches: str => [6, 9].some(idx => str(idx)),
+    },
+    {
+      count: 1,
+      stops: [
+        { country: 4, arrival: 5, departure: 48, city: [55] },
+      ],
+      returnDate: 48,
+      matches: str => [4, 5, 48, 55].some(idx => str(idx)),
+    },
+  ];
+
   return (table.rows || []).map((row, i) => {
     const cells = row.c || [];
     const get   = idx => cells[idx]?.v ?? null;
@@ -586,70 +648,55 @@ function parseSheetRows(table) {
     const str   = idx => String(get(idx) ?? "").trim();
     const pick  = (...indices) => indices.map(str).find(Boolean) || "";
 
-    const submitted    = pd(0);
-    const name         = formatName(get(1));
-    const numCountries = Number(get(2) || 1);
-    const purpose      = str(3);
+    const submitted = pd(0);
+    const name      = formatName(get(1));
+    const purpose   = str(3);
 
-    // City columns 58–61 are shared across all sections (confirmed from live gviz data).
-    // Stop n (0-based) → column 58+n.
-    const layouts = {
-      1: {
-        stops: [
-          { country: 4, arrival: 5, departure: 48, city: [55, 49] },
-        ],
-        returnDate: 48,
-      },
-      2: {
-        stops: [
-          { country: 6, arrival: 7, departure: 8, city: [54, 50] },
-          { country: 9, arrival: 10, departure: 11, city: [51, 56, 59] },
-        ],
-        returnDate: 11,
-      },
-      3: {
-        stops: [
-          { country: 12, arrival: 13, departure: 14, city: [50, 54, 58] },
-          { country: 15, arrival: 16, departure: 17, city: [56, 51, 59] },
-          { country: 18, arrival: 19, departure: 20, city: [60, 57] },
-        ],
-        returnDate: 20,
-      },
-      4: {
-        stops: [
-          { country: 21, arrival: 22, departure: 23, city: [58, 54, 50] },
-          { country: 24, arrival: 25, departure: 26, city: [59, 56, 51] },
-          { country: 27, arrival: 28, departure: 29, city: [57, 60] },
-          { country: 30, arrival: 31, departure: 32, city: [61] },
-        ],
-        returnDate: 32,
-      },
-      5: {
-        stops: [
-          { country: 33, arrival: 34, departure: 35, city: [62, 63, 58] },
-          { country: 36, arrival: 37, departure: 38, city: [64, 68, 59] },
-          { country: 39, arrival: 40, departure: 41, city: [65, 69, 60] },
-          { country: 42, arrival: 43, departure: 44, city: [66, 70, 61] },
-        ],
-        returnDate: 44,
-      },
-    };
-
-    const layout = layouts[numCountries] || layouts[5];
+    const explicitCount = normalizeCountryCount(get(2));
+    const inferredLayout = layouts.find(layout => layout.matches(str)) || layouts.at(-1);
+    const layout = layouts.find(candidate => candidate.count === explicitCount) || inferredLayout;
     let stops = layout.stops.map(stop => ({
-      country: str(stop.country),
-      city: pick(...stop.city),
-      arrival: pd(stop.arrival),
+      country:   str(stop.country),
+      city:      pick(...stop.city),
+      arrival:   pd(stop.arrival),
       departure: pd(stop.departure),
     }));
     let returnDate = pd(layout.returnDate);
 
+    // Parse overflow stop(s) for 5+ country trips (free-text fields).
+    if (layout.overflowCountry !== undefined) {
+      const overflowCountry = str(layout.overflowCountry);
+      if (overflowCountry) {
+        const overflowDates = str(layout.overflowDates);
+        const overflowCity  = str(layout.overflowCity);
+        // Extract first and last M/D date tokens from the date range string.
+        const dateTokens = overflowDates.match(/\d{1,2}\/\d{1,2}(?:\/\d{4})?/g) || [];
+        // Use the year of the last structured stop as context (handles cross-year trips).
+        const ctxYear = (() => {
+          const last = stops.filter(s => s.departure).at(-1);
+          if (last?.departure) return new Date(last.departure + "T00:00:00").getFullYear();
+          return new Date().getFullYear();
+        })();
+        const toISO = d => parseDateValue(d.split("/").length === 2 ? `${d}/${ctxYear}` : d);
+        const overflowArrival   = dateTokens.length ? toISO(dateTokens[0])                      : "";
+        const overflowDeparture = dateTokens.length ? toISO(dateTokens[dateTokens.length - 1]) : "";
+        if (overflowDeparture) returnDate = overflowDeparture;
+        stops.push({
+          country:   overflowCountry,
+          city:      overflowCity,
+          arrival:   overflowArrival,
+          departure: overflowDeparture,
+        });
+      }
+    }
+
     stops = stops.filter(s => s.country || s.city);
     if (!stops.length) stops = [{ country: "Unknown", city: "", arrival: "", departure: "" }];
+    const numCountries = stops.length;
 
     return {
       id: `sheet-${name.replace(/\s+/g, "-").toLowerCase()}-${i}`,
-      name, purpose, returnDate, submitted, stops,
+      name, purpose, returnDate, submitted, stops, numCountries,
     };
   });
 }

@@ -41,6 +41,24 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  position: relative;
+}
+
+.header-text {
+  min-width: 0;
+}
+
+.practice-brand {
+  position: absolute;
+  right: 32px;
+  bottom: 24px;
+  margin-bottom: 0;
+}
+
+.practice-logo {
+  width: 150px;
+  height: auto;
+  display: block;
 }
 
 .header-actions {
@@ -300,27 +318,17 @@ body {
 }
 
 .checklist-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  background: rgba(37, 99, 235, 0.08);
-  font-size: 0.8rem;
-  font-weight: 700;
   color: var(--accent);
-  text-decoration: none;
-  width: fit-content;
-  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(29, 78, 216, 0.4);
+  transition: text-decoration-color 0.15s, opacity 0.15s;
 }
 
 .checklist-link:hover {
-  background: rgba(37, 99, 235, 0.14);
-  border-color: rgba(37, 99, 235, 0.28);
-  transform: translateY(-1px);
-  text-decoration: none;
+  text-decoration-color: var(--accent);
+  opacity: 0.8;
 }
 
 .checklist-item.completed .checklist-item-text {
@@ -701,7 +709,9 @@ body {
 /* ── Mobile ─────────────────────────────────────────── */
 @media (max-width: 600px) {
   .app-shell     { padding: 14px 0 48px; width: 96%; }
-  .page-header   { padding: 20px 18px; }
+  .page-header   { padding: 20px 18px 88px; }
+  .practice-brand { right: 18px; bottom: 18px; }
+  .practice-logo { width: 120px; }
   .stat-count    { font-size: 1.6rem; }
   .stat-card     { padding: 14px 16px; }
   .stats-bar     { grid-template-columns: repeat(2, 1fr); }
