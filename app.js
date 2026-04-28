@@ -499,7 +499,11 @@ function attachEvents() {
   });
 
   document.querySelectorAll(".checklist-link").forEach(link => {
-    link.addEventListener("click", e => e.stopPropagation());
+    link.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.open(link.href, "_blank", "noopener,noreferrer");
+    });
   });
 
   document.querySelectorAll(".reset-btn").forEach(btn => {
