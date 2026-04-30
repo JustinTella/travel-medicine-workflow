@@ -224,7 +224,6 @@ function renderChecklistTask(task, index, patient) {
 }
 
 function isTaskChecked(patient, taskIndex, state) {
-  if (taskIndex === 4) return isTravelKitApproved(patient);
   return !!(state[patient.id] || {})[taskIndex];
 }
 
@@ -471,10 +470,9 @@ function renderPatients() {
     <div class="checklist">
       ${CHECKLIST.map((task, i) => {
         const checked = isTaskChecked(p, i, state);
-        const isTravelKitTask = i === 4;
         return `
         <label class="checklist-item${checked ? " completed" : ""}">
-          <input type="checkbox" data-patient-id="${p.id}" data-task-index="${i}" ${checked ? "checked" : ""} ${isTravelKitTask ? 'data-approval-driven="true" disabled' : ""} />
+          <input type="checkbox" data-patient-id="${p.id}" data-task-index="${i}" ${checked ? "checked" : ""} />
           <span class="checklist-item-text">
             ${renderChecklistTask(task, i, p)}
             ${task.note ? `<span class="checklist-note">⚠ ${task.note}</span>` : ""}
@@ -547,13 +545,6 @@ function updatePatientProgress(patientId, state) {
     approvalPill.classList.toggle("approval-pill-pending", !approved);
   }
 
-  const travelKitCheckbox = card.querySelector('input[data-task-index="4"]');
-  if (travelKitCheckbox && patient) {
-    const approved = isTravelKitApproved(patient);
-    travelKitCheckbox.checked = approved;
-    travelKitCheckbox.disabled = true;
-    travelKitCheckbox.closest(".checklist-item")?.classList.toggle("completed", approved);
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -595,12 +586,6 @@ function attachEvents() {
     cb.addEventListener("change", () => {
       const patientId = cb.dataset.patientId;
       const taskIndex = Number(cb.dataset.taskIndex);
-      if (taskIndex === 4) {
-        const patient = patients.find(entry => entry.id === patientId);
-        cb.checked = patient ? isTravelKitApproved(patient) : false;
-        cb.disabled = true;
-        return;
-      }
       const state     = loadState();
 
       if (!state[patientId]) state[patientId] = {};
@@ -632,11 +617,8 @@ function attachEvents() {
       const details = document.getElementById(`details-${patientId}`);
       if (details) {
         details.querySelectorAll(".checklist-item").forEach(item => {
-          const input = item.querySelector("input");
-          const taskIndex = Number(input?.dataset.taskIndex);
-          if (taskIndex === 4) return;
           item.classList.remove("completed");
-          input.checked = false;
+          item.querySelector("input").checked = false;
         });
       }
 
